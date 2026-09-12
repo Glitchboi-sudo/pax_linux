@@ -25,7 +25,10 @@ build() {
   cp -rT "$repo/src" "$srcdir/tree/src"
   cp -rT "$repo/include" "$srcdir/tree/include"
   cp "$repo/Makefile" "$srcdir/tree/Makefile"
-  cp -r "$repo/packaging" "$srcdir/tree/packaging"
+  # copy only the udev rule needed by package(); copying all of packaging/ would
+  # recurse into makepkg's srcdir which lives under packaging/arch/.
+  install -Dm644 "$repo/packaging/udev/51-android-pax.rules" \
+    "$srcdir/tree/packaging/udev/51-android-pax.rules"
   cp "$repo/NOTICE" "$srcdir/tree/NOTICE" 2>/dev/null || true
   make -C "$srcdir/tree"
 }

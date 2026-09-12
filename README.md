@@ -27,7 +27,9 @@ con dos cambios sobre el original, ambos reimplementados aquí:
    - **`syslog`** → abre el servicio `paxlog:system` y vuelca el log de sistema del TPV.
    - **`systool <subcomando>`** → ejecuta `shell:systool …` en el terminal. Para los
      subcomandos con archivo (`update`/`write`/`install`/`apn`/`puk`) hace `push` del
-     archivo local a `/data/local/tmp` antes y lo borra después.
+     archivo local a `/data/local/tmp` antes y lo borra después. Además captura el
+     **código de retorno** del terminal desde el marcador `[SYSTOOL:-N]` de la salida
+     y lo devuelve como exit code (comportamiento del `pax_adb.exe` de 2021).
    - **`puk <install|uninstall|list>`** → gestiona paquetes PUK vía `shell:puktools`
      (`install` sube el archivo local igual que `systool`).
    - **`sysver`** → muestra las versiones del firmware (`pax.ctrl.androidver`,

@@ -1,10 +1,8 @@
 # PAX adb patch — changes on top of AOSP system/core adb (android-5.1.1_r38)
-# Functional PAX additions:
-#   adb.h/adb.c        A_HDSK 'paxadb' handshake
-#   usb_vendors.c      PAX USB vendor IDs 0x2FB8 / 0x0327
-#   commandline.c      syslog, systool, puk, sysver, unlink, getappinfo (+ persist-app routing)
-#   file_sync_*.c/.h   do_sync_unlink / sync_unlink (ULNK sync request)
-# Portability fixes for modern glibc / OpenSSL 3.x (usb_linux.c, adb_auth_host.c).
+# Functional PAX additions: A_HDSK 'paxadb' handshake; PAX USB VIDs 0x2FB8/0x0327;
+#   commands syslog, systool, puk, sysver, unlink, getappinfo (+ persist-app routing);
+#   systool exit-code capture via the [SYSTOOL:-N] marker (from the 2021 pax_adb.exe);
+#   do_sync_unlink/sync_unlink (ULNK). Plus glibc/OpenSSL 3.x portability fixes.
 
 --- a/adb/adb.h	2026-09-12 08:35:42.753308229 -0600
 +++ b/adb/adb.h	2026-09-11 21:31:25.680453175 -0600
@@ -80,7 +78,7 @@
      VENDOR_ID_ANYDATA,
      VENDOR_ID_ARCHOS,
 --- a/adb/commandline.c	2026-09-12 08:35:44.466737306 -0600
-+++ b/adb/commandline.c	2026-09-12 12:09:48.613194535 -0600
++++ b/adb/commandline.c	2026-09-12 12:50:52.589913927 -0600
 @@ -124,6 +124,13 @@
          "  adb shell <command>          - run remote shell command\n"
          "  adb emu <command>            - run emulator console command\n"
@@ -95,7 +93,7 @@
          "  adb forward --list           - list all forward socket connections.\n"
          "                                 the format is a list of lines with the following format:\n"
          "                                    <serial> \" \" <local> \" \" <remote> \"\\n\"\n"
-@@ -850,6 +857,144 @@
+@@ -850,6 +857,207 @@
      return 0;
  }
  
@@ -137,22 +135,85 @@
 +    return atoi(buf);
 +}
 +
-+/* Run "shell:<tool> <args...>" on the device and stream its output. */
++/* Stream a service's output to stdout and, when parse_ret is set, recover the
++ * systool exit code from a "[SYSTOOL:-N]" marker in the output (as the 2021
++ * pax_adb.exe does). Returns 0 when no marker is present (success). The code
++ * normalisation mirrors the original tool exactly. */
++static int pax_stream_and_parse_ret(int fd, int parse_ret)
++{
++    static const char PFX[] = "[SYSTOOL:-";   /* 10 chars, trailing '-' included */
++    char buf[4096];
++    int ret = 0, len;
++
++    for (;;) {
++        len = adb_read(fd, buf, sizeof(buf));
++        if (len == 0)
++            break;
++        if (len < 0) {
++            if (errno == EINTR)
++                continue;
++            break;
++        }
++        fwrite(buf, 1, len, stdout);
++        fflush(stdout);
++
++        if (parse_ret) {
++            char* p = memmem(buf, len, PFX, sizeof(PFX) - 1);
++            if (p) {
++                char digits[32];
++                int di = 0;
++                char* q = p + (sizeof(PFX) - 1);
++                while (q < buf + len && *q != ']') {
++                    if (*q >= '0' && *q <= '9' && di < (int)sizeof(digits) - 1)
++                        digits[di++] = *q;
++                    q++;
++                }
++                digits[di] = '\0';
++                ret = -atoi(digits);
++                if (ret == -4)
++                    ret = -6;
++                else if (ret == -22 || ret == -101)
++                    ret = 0;
++                else if ((unsigned)(ret + 310) > 9)
++                    ret = -5;
++            }
++        }
++    }
++    return ret;
++}
++
++/* Run "shell:<tool> <args...>" on the device, stream its output, and return the
++ * tool's exit code. systool reports it via the [SYSTOOL:-N] marker; puktools
++ * does not (always 0), matching pax_adb.exe. */
 +static int pax_tool_command(transport_type transport, char* serial,
 +                            const char* tool, int argc, char** argv)
 +{
-+    char buf[4096];
++    char svc[4096];
 +    char* quoted;
-+    int i;
++    int i, fd;
 +
-+    snprintf(buf, sizeof(buf), "shell:%s", tool);
++    snprintf(svc, sizeof(svc), "shell:%s", tool);
 +    for (i = 0; i < argc; i++) {
 +        quoted = escape_arg(argv[i]);
-+        strncat(buf, " ", sizeof(buf) - 1);
-+        strncat(buf, quoted, sizeof(buf) - 1);
++        strncat(svc, " ", sizeof(svc) - 1);
++        strncat(svc, quoted, sizeof(svc) - 1);
 +        free(quoted);
 +    }
-+    return send_shellcommand(transport, serial, buf);
++
++    for (;;) {                          /* wait-for-device, like send_shellcommand */
++        fd = adb_connect(svc);
++        if (fd >= 0)
++            break;
++        fprintf(stderr, "- waiting for device -\n");
++        adb_sleep_ms(1000);
++        do_cmd(transport, serial, "wait-for-device", 0);
++    }
++
++    {
++        int ret = pax_stream_and_parse_ret(fd, !strcmp(tool, "systool"));
++        adb_close(fd);
++        return ret;
++    }
 +}
 +
 +/* Dispatch a systool/puktools management command. <tool> is the on-device
@@ -240,7 +301,7 @@
  static int mkdirs(const char *path)
  {
      int ret;
-@@ -1599,6 +1744,53 @@
+@@ -1599,6 +1807,53 @@
          return do_sync_ls(argv[1]);
      }
  
@@ -294,7 +355,7 @@
      if(!strcmp(argv[0], "push")) {
          int show_progress = 0;
          int copy_attrs = 0; // unused
-@@ -1607,6 +1799,14 @@
+@@ -1607,6 +1862,14 @@
          parse_push_pull_args(&argv[1], argc - 1, &lpath, &rpath, &show_progress, &copy_attrs);
  
          if ((lpath != NULL) && (rpath != NULL)) {

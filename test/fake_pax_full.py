@@ -24,11 +24,12 @@ ID_STAT=mkid(b"STAT"); ID_ULNK=mkid(b"ULNK"); ID_QUIT=mkid(b"QUIT")
 ID_RECV=mkid(b"RECV"); ID_DATA=mkid(b"DATA"); ID_DONE=mkid(b"DONE")
 
 PORT=int(sys.argv[1]) if len(sys.argv)>1 else 15555
-SYSVER="0"; LOGF=None
+SYSVER="0"; LOGF=None; SYSTOOL_RET=None
 a=sys.argv[2:]
 while a:
     if a[0]=="--sysver": SYSVER=a[1]; a=a[2:]
     elif a[0]=="--log": LOGF=a[1]; a=a[2:]
+    elif a[0]=="--systool-ret": SYSTOOL_RET=a[1]; a=a[2:]
     else: a=a[1:]
 
 opened=[]
@@ -80,6 +81,11 @@ class Stream:
             s.wrte(b"SP_4.5.6\n")
         elif s.dest=="paxlog:system":
             s.wrte(b"[paxlog] fake system log line 1\n[paxlog] line 2\n")
+        elif s.dest.startswith("shell:systool"):
+            out="[fake] ran: "+s.dest[len("shell:"):]+"\n"
+            if SYSTOOL_RET is not None:
+                out+="[SYSTOOL:-%s]\n" % SYSTOOL_RET   # systool exit-code marker
+            s.wrte(out.encode())
         elif s.dest.startswith("shell:"):
             s.wrte(("[fake] ran: "+s.dest[len("shell:"):]+"\n").encode())
         else:

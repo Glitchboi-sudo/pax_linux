@@ -895,22 +895,85 @@ static int pax_systool_sysver(void)
     return atoi(buf);
 }
 
-/* Run "shell:<tool> <args...>" on the device and stream its output. */
+/* Stream a service's output to stdout and, when parse_ret is set, recover the
+ * systool exit code from a "[SYSTOOL:-N]" marker in the output (as the 2021
+ * pax_adb.exe does). Returns 0 when no marker is present (success). The code
+ * normalisation mirrors the original tool exactly. */
+static int pax_stream_and_parse_ret(int fd, int parse_ret)
+{
+    static const char PFX[] = "[SYSTOOL:-";   /* 10 chars, trailing '-' included */
+    char buf[4096];
+    int ret = 0, len;
+
+    for (;;) {
+        len = adb_read(fd, buf, sizeof(buf));
+        if (len == 0)
+            break;
+        if (len < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        fwrite(buf, 1, len, stdout);
+        fflush(stdout);
+
+        if (parse_ret) {
+            char* p = memmem(buf, len, PFX, sizeof(PFX) - 1);
+            if (p) {
+                char digits[32];
+                int di = 0;
+                char* q = p + (sizeof(PFX) - 1);
+                while (q < buf + len && *q != ']') {
+                    if (*q >= '0' && *q <= '9' && di < (int)sizeof(digits) - 1)
+                        digits[di++] = *q;
+                    q++;
+                }
+                digits[di] = '\0';
+                ret = -atoi(digits);
+                if (ret == -4)
+                    ret = -6;
+                else if (ret == -22 || ret == -101)
+                    ret = 0;
+                else if ((unsigned)(ret + 310) > 9)
+                    ret = -5;
+            }
+        }
+    }
+    return ret;
+}
+
+/* Run "shell:<tool> <args...>" on the device, stream its output, and return the
+ * tool's exit code. systool reports it via the [SYSTOOL:-N] marker; puktools
+ * does not (always 0), matching pax_adb.exe. */
 static int pax_tool_command(transport_type transport, char* serial,
                             const char* tool, int argc, char** argv)
 {
-    char buf[4096];
+    char svc[4096];
     char* quoted;
-    int i;
+    int i, fd;
 
-    snprintf(buf, sizeof(buf), "shell:%s", tool);
+    snprintf(svc, sizeof(svc), "shell:%s", tool);
     for (i = 0; i < argc; i++) {
         quoted = escape_arg(argv[i]);
-        strncat(buf, " ", sizeof(buf) - 1);
-        strncat(buf, quoted, sizeof(buf) - 1);
+        strncat(svc, " ", sizeof(svc) - 1);
+        strncat(svc, quoted, sizeof(svc) - 1);
         free(quoted);
     }
-    return send_shellcommand(transport, serial, buf);
+
+    for (;;) {                          /* wait-for-device, like send_shellcommand */
+        fd = adb_connect(svc);
+        if (fd >= 0)
+            break;
+        fprintf(stderr, "- waiting for device -\n");
+        adb_sleep_ms(1000);
+        do_cmd(transport, serial, "wait-for-device", 0);
+    }
+
+    {
+        int ret = pax_stream_and_parse_ret(fd, !strcmp(tool, "systool"));
+        adb_close(fd);
+        return ret;
+    }
 }
 
 /* Dispatch a systool/puktools management command. <tool> is the on-device

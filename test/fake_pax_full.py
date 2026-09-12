@@ -72,6 +72,12 @@ class Stream:
             return  # wait for WRTE payloads
         if s.dest=="shell:getprop pax.ctrl.systool.sysver":
             s.wrte((SYSVER+"\n").encode())
+        elif s.dest=="shell:getprop pax.ctrl.androidver":
+            s.wrte(b"7.1.2\n")
+        elif s.dest=="shell:getprop pax.ctrl.apbootver":
+            s.wrte(b"A920_APBOOT_1.2.3\n")
+        elif s.dest=="shell:getprop pax.ctrl.spver":
+            s.wrte(b"SP_4.5.6\n")
         elif s.dest=="paxlog:system":
             s.wrte(b"[paxlog] fake system log line 1\n[paxlog] line 2\n")
         elif s.dest.startswith("shell:"):

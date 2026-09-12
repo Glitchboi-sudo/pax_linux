@@ -28,6 +28,10 @@ con dos cambios sobre el original, ambos reimplementados aquí:
    - **`systool <subcomando>`** → ejecuta `shell:systool …` en el terminal. Para los
      subcomandos con archivo (`update`/`write`/`install`/`apn`/`puk`) hace `push` del
      archivo local a `/data/local/tmp` antes y lo borra después.
+   - **`puk <install|uninstall|list>`** → gestiona paquetes PUK vía `shell:puktools`
+     (`install` sube el archivo local igual que `systool`).
+   - **`sysver`** → muestra las versiones del firmware (`pax.ctrl.androidver`,
+     `apbootver`, `spver`; o `systool sysver` según el firmware).
    - **`unlink <remote>`** → borra un archivo en el terminal mediante la petición sync
      **`ULNK`**. *Version-aware*: si `pax.ctrl.systool.sysver ≥ 100` y la ruta está bajo
      `/data/resource/app/`, se redirige a `systool remove persist-app`.
@@ -107,6 +111,8 @@ Comandos específicos de PAX:
 |---|---|
 | `pax_adb syslog` | Vuelca el log de sistema del TPV (`paxlog:system`) |
 | `pax_adb systool <subcomando>` | Ejecuta un comando `systool` remoto (p. ej. `pax_adb systool puk write <archivo>`) |
+| `pax_adb puk <install\|uninstall\|list>` | Gestiona paquetes PUK (`puktools`) |
+| `pax_adb sysver` | Muestra las versiones del firmware del terminal |
 | `pax_adb unlink <remote>` | Borra un archivo en el terminal |
 | `pax_adb getappinfo [<local>]` | Descarga el `appinfo.bin` del terminal |
 

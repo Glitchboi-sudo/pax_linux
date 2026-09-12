@@ -19,6 +19,8 @@ sleep 0.8
 echo "===== [sysver=$SYSVER] client output ====="
 echo "--- syslog ---";      "$BIN" syslog
 echo "--- systool status foo ---"; "$BIN" systool status foo
+echo "--- puk list ---"; "$BIN" puk list
+echo "--- sysver ---"; "$BIN" sysver
 echo "--- getappinfo /tmp/appinfo_${PORT}.bin ---"; "$BIN" getappinfo /tmp/appinfo_${PORT}.bin; echo "pulled: $(cat /tmp/appinfo_${PORT}.bin 2>/dev/null)"
 echo "--- unlink /tmp/x ---";       "$BIN" unlink /tmp/x
 echo "--- unlink /data/resource/app/thing ---"; "$BIN" unlink /data/resource/app/thing

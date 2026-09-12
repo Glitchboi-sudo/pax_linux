@@ -127,6 +127,8 @@ void help()
         "  adb syslog                   - View PAX system log (paxlog:system)\n"
         "  adb systool <subcommand>     - run remote PAX systool command\n"
         "                                 e.g. 'adb systool puk write <file>'\n"
+        "  adb puk <install|uninstall|list> - manage PAX puk packages (puktools)\n"
+        "  adb sysver                   - print PAX firmware versions\n"
         "  adb unlink <remote>          - remove a file on the device\n"
         "  adb getappinfo [<local>]     - pull the appinfo file from the device\n"
         "  adb forward --list           - list all forward socket connections.\n"
@@ -859,37 +861,49 @@ static int logcat(transport_type transport, char* serial, int argc, char **argv)
  *  PAX-specific commands (recovered from pax_adb.exe)                 *
  * ------------------------------------------------------------------ */
 
-/* Query the device firmware's systool version. Returns the integer value of
- * the pax.ctrl.systool.sysver property, or -1 if it can't be read. Used to
- * decide how unlink/push treat persistent-app paths. */
-static int pax_systool_sysver(void)
+/* Read a device property via getprop; returns 0 and fills out (newline
+ * trimmed) on success, -1 otherwise. */
+static int pax_getprop(const char* prop, char* out, int outlen)
 {
-    char buf[4096];
+    char svc[128];
     int fd, n, total = 0;
 
-    fd = adb_connect("shell:getprop pax.ctrl.systool.sysver");
+    snprintf(svc, sizeof(svc), "shell:getprop %s", prop);
+    fd = adb_connect(svc);
     if (fd < 0)
         return -1;
-    while (total < (int)sizeof(buf) - 1) {
-        n = adb_read(fd, buf + total, sizeof(buf) - 1 - total);
+    while (total < outlen - 1) {
+        n = adb_read(fd, out + total, outlen - 1 - total);
         if (n <= 0)
             break;
         total += n;
     }
     adb_close(fd);
-    buf[total] = '\0';
+    out[total] = '\0';
+    while (total > 0 && (out[total - 1] == '\n' || out[total - 1] == '\r'))
+        out[--total] = '\0';
+    return 0;
+}
+
+/* Integer value of pax.ctrl.systool.sysver (or -1). Used to decide how
+ * unlink/push/sysver behave across firmware versions. */
+static int pax_systool_sysver(void)
+{
+    char buf[256];
+    if (pax_getprop("pax.ctrl.systool.sysver", buf, sizeof(buf)) != 0)
+        return -1;
     return atoi(buf);
 }
 
-/* Run "shell:systool <args...>" on the device and stream its output.
- * argv are the tokens that follow "systool". */
-static int pax_systool_command(transport_type transport, char* serial, int argc, char** argv)
+/* Run "shell:<tool> <args...>" on the device and stream its output. */
+static int pax_tool_command(transport_type transport, char* serial,
+                            const char* tool, int argc, char** argv)
 {
     char buf[4096];
     char* quoted;
     int i;
 
-    snprintf(buf, sizeof(buf), "shell:systool");
+    snprintf(buf, sizeof(buf), "shell:%s", tool);
     for (i = 0; i < argc; i++) {
         quoted = escape_arg(argv[i]);
         strncat(buf, " ", sizeof(buf) - 1);
@@ -899,11 +913,12 @@ static int pax_systool_command(transport_type transport, char* serial, int argc,
     return send_shellcommand(transport, serial, buf);
 }
 
-/* Dispatch "adb systool <subcommand> [args]". For the file-bearing
- * subcommands (update/write/install/apn/puk) the trailing argument is a local
- * file: it is pushed to /data/local/tmp first, the systool command is run
- * against the on-device copy, and that copy is then removed. */
-static int pax_systool_manage(transport_type transport, char* serial, int argc, char** argv)
+/* Dispatch a systool/puktools management command. <tool> is the on-device
+ * service ("systool" or "puktools"). For file-bearing subcommands the trailing
+ * argument is a local file that is pushed to /data/local/tmp, used on-device,
+ * then removed. argv[0] is the user command word (skipped). */
+static int pax_tool_manage(transport_type transport, char* serial,
+                           const char* tool, int argc, char** argv)
 {
     const char* sub;
     int file_based, ret;
@@ -912,9 +927,12 @@ static int pax_systool_manage(transport_type transport, char* serial, int argc, 
         return usage();
 
     sub = argv[1];
-    file_based = !strcmp(sub, "update")  || !strcmp(sub, "write") ||
-                 !strcmp(sub, "install") || !strcmp(sub, "apn")   ||
-                 !strcmp(sub, "puk");
+    if (!strcmp(tool, "systool"))
+        file_based = !strcmp(sub, "update")  || !strcmp(sub, "write") ||
+                     !strcmp(sub, "install") || !strcmp(sub, "apn")   ||
+                     !strcmp(sub, "puk");
+    else /* puktools */
+        file_based = !strcmp(sub, "install");
 
     if (file_based && argc >= 3) {
         const char* local = argv[argc - 1];
@@ -938,7 +956,7 @@ static int pax_systool_manage(transport_type transport, char* serial, int argc, 
             return ret;
 
         argv[argc - 1] = dest;              /* device path replaces local one */
-        ret = pax_systool_command(transport, serial, argc - 1, argv + 1);
+        ret = pax_tool_command(transport, serial, tool, argc - 1, argv + 1);
 
         /* best-effort cleanup of the pushed file */
         snprintf(rmbuf, sizeof(rmbuf), "shell:rm ");
@@ -953,7 +971,28 @@ static int pax_systool_manage(transport_type transport, char* serial, int argc, 
         return ret;
     }
 
-    return pax_systool_command(transport, serial, argc - 1, argv + 1);
+    return pax_tool_command(transport, serial, tool, argc - 1, argv + 1);
+}
+
+/* "adb sysver" — print PAX firmware versions. On firmware that exposes it via
+ * systool (sysver property == 1) delegate to 'systool sysver'; otherwise read
+ * the individual pax.ctrl.* properties directly. */
+static int pax_sysver(transport_type transport, char* serial)
+{
+    char v[512];
+
+    if (pax_systool_sysver() == 1) {
+        char* sv[2];
+        sv[0] = "systool"; sv[1] = "sysver";
+        return pax_tool_manage(transport, serial, "systool", 2, sv);
+    }
+    if (pax_getprop("pax.ctrl.androidver", v, sizeof(v)) == 0)
+        printf("androidver: %s\n", v);
+    if (pax_getprop("pax.ctrl.apbootver", v, sizeof(v)) == 0)
+        printf("apbootver:  %s\n", v);
+    if (pax_getprop("pax.ctrl.spver", v, sizeof(v)) == 0)
+        printf("spver:      %s\n", v);
+    return 0;
 }
 
 static int mkdirs(const char *path)
@@ -1714,7 +1753,19 @@ top:
     if(!strcmp(argv[0], "systool")) {
         /* PAX: run a remote systool subcommand (see 'adb help'). */
         if (argc < 2) return usage();
-        return pax_systool_manage(ttype, serial, argc, argv);
+        return pax_tool_manage(ttype, serial, "systool", argc, argv);
+    }
+
+    if(!strcmp(argv[0], "puk")) {
+        /* PAX: run a remote puktools subcommand (install/uninstall/list). */
+        if (argc < 2) return usage();
+        return pax_tool_manage(ttype, serial, "puktools", argc, argv);
+    }
+
+    if(!strcmp(argv[0], "sysver")) {
+        /* PAX: print the terminal firmware versions. */
+        if (argc != 1) return usage();
+        return pax_sysver(ttype, serial);
     }
 
     if(!strcmp(argv[0], "getappinfo")) {
@@ -1735,7 +1786,7 @@ top:
             char* sv[4];
             sv[0] = "systool"; sv[1] = "remove"; sv[2] = "persist-app";
             sv[3] = (char*)path;
-            return pax_systool_manage(ttype, serial, 4, sv);
+            return pax_tool_manage(ttype, serial, "systool", 4, sv);
         }
         return do_sync_unlink(path);
     }
@@ -1754,7 +1805,7 @@ top:
                 char* sv[4];
                 sv[0] = "systool"; sv[1] = "install"; sv[2] = "persist-app";
                 sv[3] = (char*)lpath;
-                return pax_systool_manage(ttype, serial, 4, sv);
+                return pax_tool_manage(ttype, serial, "systool", 4, sv);
             }
             return do_sync_push(lpath, rpath, show_progress);
         }

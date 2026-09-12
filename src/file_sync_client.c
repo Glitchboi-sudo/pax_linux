@@ -226,6 +226,64 @@ int sync_readmode(int fd, const char *path, unsigned *mode)
     return 0;
 }
 
+/* PAX extension: ask the device's sync service to delete a file.
+ * Wire format mirrors pax_adb.exe: ULNK request header (id + namelen) followed
+ * by the path; the device answers with an OKAY status header on success. */
+static int sync_unlink(int fd, const char *path)
+{
+    syncmsg msg;
+    int len = strlen(path);
+
+    msg.req.id = ID_ULNK;
+    msg.req.namelen = htoll(len);
+
+    if(writex(fd, &msg.req, sizeof(msg.req)) ||
+       writex(fd, path, len)) {
+        return -1;
+    }
+
+    if(readx(fd, &msg.status, sizeof(msg.status))) {
+        return -1;
+    }
+
+    if(msg.status.id != ID_OKAY) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int do_sync_unlink(const char *rpath)
+{
+    unsigned mode;
+    int fd, ret;
+
+    fd = adb_connect("sync:");
+    if(fd < 0) {
+        fprintf(stderr,"error: %s\n", adb_error());
+        return 1;
+    }
+
+    /* Refuse to unlink directories (matches pax_adb.exe). A missing file
+     * reports mode 0, in which case we still forward the request and let the
+     * device report the outcome. */
+    if(sync_readmode(fd, rpath, &mode) == 0 && mode != 0 &&
+       (mode & 0xf000) == 0x4000) {
+        fprintf(stderr,"error: '%s' is a directory\n", rpath);
+        sync_quit(fd);
+        return 1;
+    }
+
+    ret = sync_unlink(fd, rpath);
+    sync_quit(fd);
+
+    if(ret != 0) {
+        fprintf(stderr,"error: failed to remove '%s'\n", rpath);
+        return 1;
+    }
+    return 0;
+}
+
 static int write_data_file(int fd, const char *path, syncsendbuf *sbuf, int show_progress)
 {
     int lfd, err = 0;

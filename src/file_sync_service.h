@@ -81,6 +81,8 @@ int do_sync_ls(const char *path);
 int do_sync_push(const char *lpath, const char *rpath, int show_progress);
 int do_sync_sync(const char *lpath, const char *rpath, int listonly);
 int do_sync_pull(const char *rpath, const char *lpath, int show_progress, int pullTime);
+/* PAX extension: delete a file on the device via the ULNK sync request. */
+int do_sync_unlink(const char *rpath);
 
 #define SYNC_DATA_MAX (64*1024)
 

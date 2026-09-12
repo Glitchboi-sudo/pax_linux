@@ -1,9 +1,15 @@
-# PAX adb patch — changes applied on top of AOSP system/core adb (android-5.1.1_r38)
-# Two functional PAX changes (adb.h, adb.c, usb_vendors.c) + two portability fixes
-# (usb_linux.c, adb_auth_host.c) needed to build against modern glibc/OpenSSL 3.x.
+# PAX adb patch — changes on top of AOSP system/core adb (android-5.1.1_r38)
+# Functional PAX additions:
+#   adb.h/adb.c        A_HDSK 'paxadb' handshake
+#   usb_vendors.c      PAX USB vendor IDs 0x2FB8 / 0x0327
+#   commandline.c      syslog, systool, unlink, getappinfo commands (+ persist-app routing)
+#   file_sync_*.c/.h   do_sync_unlink / sync_unlink (ULNK sync request)
+# Portability fixes for modern glibc / OpenSSL 3.x:
+#   usb_linux.c        include <sys/sysmacros.h>
+#   adb_auth_host.c    RSA_get0_key accessor
 
---- a/adb/adb.h	2026-09-11 21:06:53.081936755 -0600
-+++ b/adb/adb.h	2026-09-11 21:13:57.028743653 -0600
+--- a/adb/adb.h	2026-09-12 08:35:42.753308229 -0600
++++ b/adb/adb.h	2026-09-11 21:31:25.680453175 -0600
 @@ -31,6 +31,12 @@
  #define A_CLSE 0x45534c43
  #define A_WRTE 0x45545257
@@ -17,8 +23,8 @@
  
  #define A_VERSION 0x01000000        // ADB protocol version
  
---- a/adb/adb.c	2026-09-11 21:06:53.081936755 -0600
-+++ b/adb/adb.c	2026-09-11 21:14:06.228996734 -0600
+--- a/adb/adb.c	2026-09-12 08:35:42.279948449 -0600
++++ b/adb/adb.c	2026-09-11 21:31:25.680453175 -0600
 @@ -657,6 +657,32 @@
          }
          break;
@@ -52,8 +58,8 @@
      default:
          printf("handle_packet: what is %08x?!\n", p->msg.command);
      }
---- a/adb/usb_vendors.c	2026-09-11 21:06:53.083848697 -0600
-+++ b/adb/usb_vendors.c	2026-09-11 21:22:45.656699688 -0600
+--- a/adb/usb_vendors.c	2026-09-12 08:35:43.113328345 -0600
++++ b/adb/usb_vendors.c	2026-09-11 21:31:25.680453175 -0600
 @@ -43,6 +43,11 @@
  #define VENDOR_ID_ACER          0x0502
  // Allwinner's USB Vendor ID
@@ -75,8 +81,265 @@
      VENDOR_ID_AMLOGIC,
      VENDOR_ID_ANYDATA,
      VENDOR_ID_ARCHOS,
---- a/adb/usb_linux.c	2026-09-11 21:06:53.083848697 -0600
-+++ b/adb/usb_linux.c	2026-09-11 21:11:30.331385202 -0600
+--- a/adb/commandline.c	2026-09-12 08:35:44.466737306 -0600
++++ b/adb/commandline.c	2026-09-12 08:31:42.553446210 -0600
+@@ -124,6 +124,11 @@
+         "  adb shell <command>          - run remote shell command\n"
+         "  adb emu <command>            - run emulator console command\n"
+         "  adb logcat [ <filter-spec> ] - View device log\n"
++        "  adb syslog                   - View PAX system log (paxlog:system)\n"
++        "  adb systool <subcommand>     - run remote PAX systool command\n"
++        "                                 e.g. 'adb systool puk write <file>'\n"
++        "  adb unlink <remote>          - remove a file on the device\n"
++        "  adb getappinfo [<local>]     - pull the appinfo file from the device\n"
+         "  adb forward --list           - list all forward socket connections.\n"
+         "                                 the format is a list of lines with the following format:\n"
+         "                                    <serial> \" \" <local> \" \" <remote> \"\\n\"\n"
+@@ -850,6 +855,107 @@
+     return 0;
+ }
+ 
++/* ------------------------------------------------------------------ *
++ *  PAX-specific commands (recovered from pax_adb.exe)                 *
++ * ------------------------------------------------------------------ */
++
++/* Query the device firmware's systool version. Returns the integer value of
++ * the pax.ctrl.systool.sysver property, or -1 if it can't be read. Used to
++ * decide how unlink/push treat persistent-app paths. */
++static int pax_systool_sysver(void)
++{
++    char buf[4096];
++    int fd, n, total = 0;
++
++    fd = adb_connect("shell:getprop pax.ctrl.systool.sysver");
++    if (fd < 0)
++        return -1;
++    while (total < (int)sizeof(buf) - 1) {
++        n = adb_read(fd, buf + total, sizeof(buf) - 1 - total);
++        if (n <= 0)
++            break;
++        total += n;
++    }
++    adb_close(fd);
++    buf[total] = '\0';
++    return atoi(buf);
++}
++
++/* Run "shell:systool <args...>" on the device and stream its output.
++ * argv are the tokens that follow "systool". */
++static int pax_systool_command(transport_type transport, char* serial, int argc, char** argv)
++{
++    char buf[4096];
++    char* quoted;
++    int i;
++
++    snprintf(buf, sizeof(buf), "shell:systool");
++    for (i = 0; i < argc; i++) {
++        quoted = escape_arg(argv[i]);
++        strncat(buf, " ", sizeof(buf) - 1);
++        strncat(buf, quoted, sizeof(buf) - 1);
++        free(quoted);
++    }
++    return send_shellcommand(transport, serial, buf);
++}
++
++/* Dispatch "adb systool <subcommand> [args]". For the file-bearing
++ * subcommands (update/write/install/apn/puk) the trailing argument is a local
++ * file: it is pushed to /data/local/tmp first, the systool command is run
++ * against the on-device copy, and that copy is then removed. */
++static int pax_systool_manage(transport_type transport, char* serial, int argc, char** argv)
++{
++    const char* sub;
++    int file_based, ret;
++
++    if (argc < 2)
++        return usage();
++
++    sub = argv[1];
++    file_based = !strcmp(sub, "update")  || !strcmp(sub, "write") ||
++                 !strcmp(sub, "install") || !strcmp(sub, "apn")   ||
++                 !strcmp(sub, "puk");
++
++    if (file_based && argc >= 3) {
++        const char* local = argv[argc - 1];
++        const char* base;
++        char dest[256];
++        char rmbuf[512];
++        char* quoted;
++        struct stat st;
++        int fd;
++
++        if (stat(local, &st) != 0) {
++            fprintf(stderr, "cannot stat '%s': %s\n", local, strerror(errno));
++            return 1;
++        }
++        base = strrchr(local, '/');
++        base = base ? base + 1 : local;
++        snprintf(dest, sizeof(dest), "/data/local/tmp/%s", base);
++
++        ret = do_sync_push(local, dest, 0);
++        if (ret != 0)
++            return ret;
++
++        argv[argc - 1] = dest;              /* device path replaces local one */
++        ret = pax_systool_command(transport, serial, argc - 1, argv + 1);
++
++        /* best-effort cleanup of the pushed file */
++        snprintf(rmbuf, sizeof(rmbuf), "shell:rm ");
++        quoted = escape_arg(dest);
++        strncat(rmbuf, quoted, sizeof(rmbuf) - 1);
++        free(quoted);
++        fd = adb_connect(rmbuf);
++        if (fd >= 0) {
++            read_and_dump(fd);
++            adb_close(fd);
++        }
++        return ret;
++    }
++
++    return pax_systool_command(transport, serial, argc - 1, argv + 1);
++}
++
+ static int mkdirs(const char *path)
+ {
+     int ret;
+@@ -1599,6 +1705,41 @@
+         return do_sync_ls(argv[1]);
+     }
+ 
++    if(!strcmp(argv[0], "syslog")) {
++        /* PAX: stream the terminal's system log (paxlog:system service). */
++        if (argc != 1) return usage();
++        return send_shellcommand(ttype, serial, "paxlog:system");
++    }
++
++    if(!strcmp(argv[0], "systool")) {
++        /* PAX: run a remote systool subcommand (see 'adb help'). */
++        if (argc < 2) return usage();
++        return pax_systool_manage(ttype, serial, argc, argv);
++    }
++
++    if(!strcmp(argv[0], "getappinfo")) {
++        /* PAX: pull /data/resource/public/appinfo.bin from the device. */
++        const char* lpath = (argc >= 2) ? argv[1] : ".";
++        if (argc > 2) return usage();
++        return do_sync_pull("/data/resource/public/appinfo.bin", lpath, 0, 0);
++    }
++
++    if(!strcmp(argv[0], "unlink")) {
++        /* PAX: remove a file on the device. On newer firmware, deletions under
++         * /data/resource/app/ are routed through systool (persist-app);
++         * otherwise the ULNK sync request is used directly. */
++        const char* path;
++        if (argc != 2) return usage();
++        path = argv[1];
++        if (pax_systool_sysver() >= 100 && strstr(path, "/data/resource/app/")) {
++            char* sv[4];
++            sv[0] = "systool"; sv[1] = "remove"; sv[2] = "persist-app";
++            sv[3] = (char*)path;
++            return pax_systool_manage(ttype, serial, 4, sv);
++        }
++        return do_sync_unlink(path);
++    }
++
+     if(!strcmp(argv[0], "push")) {
+         int show_progress = 0;
+         int copy_attrs = 0; // unused
+@@ -1607,6 +1748,14 @@
+         parse_push_pull_args(&argv[1], argc - 1, &lpath, &rpath, &show_progress, &copy_attrs);
+ 
+         if ((lpath != NULL) && (rpath != NULL)) {
++            /* PAX: on newer firmware, pushing into /data/resource/app/ installs
++             * a persistent app through systool instead of a raw file push. */
++            if (pax_systool_sysver() >= 100 && strstr(rpath, "/data/resource/app/")) {
++                char* sv[4];
++                sv[0] = "systool"; sv[1] = "install"; sv[2] = "persist-app";
++                sv[3] = (char*)lpath;
++                return pax_systool_manage(ttype, serial, 4, sv);
++            }
+             return do_sync_push(lpath, rpath, show_progress);
+         }
+ 
+--- a/adb/file_sync_service.h	2026-09-12 08:35:45.210112183 -0600
++++ b/adb/file_sync_service.h	2026-09-12 08:30:20.579070452 -0600
+@@ -81,6 +81,8 @@
+ int do_sync_push(const char *lpath, const char *rpath, int show_progress);
+ int do_sync_sync(const char *lpath, const char *rpath, int listonly);
+ int do_sync_pull(const char *rpath, const char *lpath, int show_progress, int pullTime);
++/* PAX extension: delete a file on the device via the ULNK sync request. */
++int do_sync_unlink(const char *rpath);
+ 
+ #define SYNC_DATA_MAX (64*1024)
+ 
+--- a/adb/file_sync_client.c	2026-09-12 08:35:44.910095416 -0600
++++ b/adb/file_sync_client.c	2026-09-12 08:30:32.386362527 -0600
+@@ -226,6 +226,64 @@
+     return 0;
+ }
+ 
++/* PAX extension: ask the device's sync service to delete a file.
++ * Wire format mirrors pax_adb.exe: ULNK request header (id + namelen) followed
++ * by the path; the device answers with an OKAY status header on success. */
++static int sync_unlink(int fd, const char *path)
++{
++    syncmsg msg;
++    int len = strlen(path);
++
++    msg.req.id = ID_ULNK;
++    msg.req.namelen = htoll(len);
++
++    if(writex(fd, &msg.req, sizeof(msg.req)) ||
++       writex(fd, path, len)) {
++        return -1;
++    }
++
++    if(readx(fd, &msg.status, sizeof(msg.status))) {
++        return -1;
++    }
++
++    if(msg.status.id != ID_OKAY) {
++        return -1;
++    }
++
++    return 0;
++}
++
++int do_sync_unlink(const char *rpath)
++{
++    unsigned mode;
++    int fd, ret;
++
++    fd = adb_connect("sync:");
++    if(fd < 0) {
++        fprintf(stderr,"error: %s\n", adb_error());
++        return 1;
++    }
++
++    /* Refuse to unlink directories (matches pax_adb.exe). A missing file
++     * reports mode 0, in which case we still forward the request and let the
++     * device report the outcome. */
++    if(sync_readmode(fd, rpath, &mode) == 0 && mode != 0 &&
++       (mode & 0xf000) == 0x4000) {
++        fprintf(stderr,"error: '%s' is a directory\n", rpath);
++        sync_quit(fd);
++        return 1;
++    }
++
++    ret = sync_unlink(fd, rpath);
++    sync_quit(fd);
++
++    if(ret != 0) {
++        fprintf(stderr,"error: failed to remove '%s'\n", rpath);
++        return 1;
++    }
++    return 0;
++}
++
+ static int write_data_file(int fd, const char *path, syncsendbuf *sbuf, int show_progress)
+ {
+     int lfd, err = 0;
+--- a/adb/usb_linux.c	2026-09-12 08:35:43.510017178 -0600
++++ b/adb/usb_linux.c	2026-09-11 21:31:25.680453175 -0600
 @@ -21,6 +21,7 @@
  
  #include <sys/ioctl.h>
@@ -85,8 +348,8 @@
  #include <sys/time.h>
  #include <dirent.h>
  #include <fcntl.h>
---- a/adb/adb_auth_host.c	2026-09-11 21:06:53.081936755 -0600
-+++ b/adb/adb_auth_host.c	2026-09-11 21:11:13.867601478 -0600
+--- a/adb/adb_auth_host.c	2026-09-12 08:35:43.816700981 -0600
++++ b/adb/adb_auth_host.c	2026-09-11 21:31:25.680453175 -0600
 @@ -53,6 +53,18 @@
  #define ANDROID_PATH   ".android"
  #define ADB_KEY_FILE   "adbkey"

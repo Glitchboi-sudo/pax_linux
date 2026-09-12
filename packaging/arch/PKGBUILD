@@ -5,8 +5,8 @@
 #   sudo pacman -U pax-adb-*.pkg.tar.zst
 pkgname=pax-adb
 pkgver=1.0.32
-pkgrel=1
-pkgdesc="Native Linux build of AOSP adb with the PAX A_HDSK handshake patch (for PAX PayDroid POS terminals)"
+pkgrel=2
+pkgdesc="Native Linux build of AOSP adb with PAX patches (A_HDSK handshake + syslog/systool/unlink/getappinfo commands) for PAX PayDroid POS terminals"
 arch=('x86_64')
 url="https://github.com/Glitchboi-sudo/pax_linux"
 license=('Apache')

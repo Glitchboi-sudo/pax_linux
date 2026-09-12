@@ -23,6 +23,18 @@ con dos cambios sobre el original, ambos reimplementados aquí:
    la interfaz ADB (clase `0xFF` / subclase `0x42` / protocolo `0x01`) si el VID
    está en su lista. El VID `0x1F3A` (Allwinner, modo bootloader) ya venía en AOSP.
 
+3. **Comandos extra** que no existen en el `adb` estándar (reimplementados aquí):
+   - **`syslog`** → abre el servicio `paxlog:system` y vuelca el log de sistema del TPV.
+   - **`systool <subcomando>`** → ejecuta `shell:systool …` en el terminal. Para los
+     subcomandos con archivo (`update`/`write`/`install`/`apn`/`puk`) hace `push` del
+     archivo local a `/data/local/tmp` antes y lo borra después.
+   - **`unlink <remote>`** → borra un archivo en el terminal mediante la petición sync
+     **`ULNK`**. *Version-aware*: si `pax.ctrl.systool.sysver ≥ 100` y la ruta está bajo
+     `/data/resource/app/`, se redirige a `systool remove persist-app`.
+   - **`getappinfo [<local>]`** → hace `pull` de `/data/resource/public/appinfo.bin`.
+   - Además, `push` a rutas bajo `/data/resource/app/` en firmware `sysver ≥ 100` se
+     redirige a `systool install persist-app` (igual que el `.exe`).
+
 El diff exacto sobre AOSP `android-5.1.1_r38` está en
 [`patches/pax_adb.patch`](patches/pax_adb.patch).
 
@@ -88,6 +100,15 @@ Los comandos son idénticos a los del `adb` original:
 | `pax_adb.exe kill-server`                   | `pax_adb kill-server`                   |
 | `pax_adb.exe shell pm uninstall --user 0 X` | `pax_adb shell pm uninstall --user 0 X` |
 | `pax_adb.exe devices`                       | `pax_adb devices`                       |
+
+Comandos específicos de PAX:
+
+| Comando | Descripción |
+|---|---|
+| `pax_adb syslog` | Vuelca el log de sistema del TPV (`paxlog:system`) |
+| `pax_adb systool <subcomando>` | Ejecuta un comando `systool` remoto (p. ej. `pax_adb systool puk write <archivo>`) |
+| `pax_adb unlink <remote>` | Borra un archivo en el terminal |
+| `pax_adb getappinfo [<local>]` | Descarga el `appinfo.bin` del terminal |
 
 ## Probar con un terminal PAX real
 

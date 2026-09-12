@@ -124,6 +124,11 @@ void help()
         "  adb shell <command>          - run remote shell command\n"
         "  adb emu <command>            - run emulator console command\n"
         "  adb logcat [ <filter-spec> ] - View device log\n"
+        "  adb syslog                   - View PAX system log (paxlog:system)\n"
+        "  adb systool <subcommand>     - run remote PAX systool command\n"
+        "                                 e.g. 'adb systool puk write <file>'\n"
+        "  adb unlink <remote>          - remove a file on the device\n"
+        "  adb getappinfo [<local>]     - pull the appinfo file from the device\n"
         "  adb forward --list           - list all forward socket connections.\n"
         "                                 the format is a list of lines with the following format:\n"
         "                                    <serial> \" \" <local> \" \" <remote> \"\\n\"\n"
@@ -848,6 +853,107 @@ static int logcat(transport_type transport, char* serial, int argc, char **argv)
 
     send_shellcommand(transport, serial, buf);
     return 0;
+}
+
+/* ------------------------------------------------------------------ *
+ *  PAX-specific commands (recovered from pax_adb.exe)                 *
+ * ------------------------------------------------------------------ */
+
+/* Query the device firmware's systool version. Returns the integer value of
+ * the pax.ctrl.systool.sysver property, or -1 if it can't be read. Used to
+ * decide how unlink/push treat persistent-app paths. */
+static int pax_systool_sysver(void)
+{
+    char buf[4096];
+    int fd, n, total = 0;
+
+    fd = adb_connect("shell:getprop pax.ctrl.systool.sysver");
+    if (fd < 0)
+        return -1;
+    while (total < (int)sizeof(buf) - 1) {
+        n = adb_read(fd, buf + total, sizeof(buf) - 1 - total);
+        if (n <= 0)
+            break;
+        total += n;
+    }
+    adb_close(fd);
+    buf[total] = '\0';
+    return atoi(buf);
+}
+
+/* Run "shell:systool <args...>" on the device and stream its output.
+ * argv are the tokens that follow "systool". */
+static int pax_systool_command(transport_type transport, char* serial, int argc, char** argv)
+{
+    char buf[4096];
+    char* quoted;
+    int i;
+
+    snprintf(buf, sizeof(buf), "shell:systool");
+    for (i = 0; i < argc; i++) {
+        quoted = escape_arg(argv[i]);
+        strncat(buf, " ", sizeof(buf) - 1);
+        strncat(buf, quoted, sizeof(buf) - 1);
+        free(quoted);
+    }
+    return send_shellcommand(transport, serial, buf);
+}
+
+/* Dispatch "adb systool <subcommand> [args]". For the file-bearing
+ * subcommands (update/write/install/apn/puk) the trailing argument is a local
+ * file: it is pushed to /data/local/tmp first, the systool command is run
+ * against the on-device copy, and that copy is then removed. */
+static int pax_systool_manage(transport_type transport, char* serial, int argc, char** argv)
+{
+    const char* sub;
+    int file_based, ret;
+
+    if (argc < 2)
+        return usage();
+
+    sub = argv[1];
+    file_based = !strcmp(sub, "update")  || !strcmp(sub, "write") ||
+                 !strcmp(sub, "install") || !strcmp(sub, "apn")   ||
+                 !strcmp(sub, "puk");
+
+    if (file_based && argc >= 3) {
+        const char* local = argv[argc - 1];
+        const char* base;
+        char dest[256];
+        char rmbuf[512];
+        char* quoted;
+        struct stat st;
+        int fd;
+
+        if (stat(local, &st) != 0) {
+            fprintf(stderr, "cannot stat '%s': %s\n", local, strerror(errno));
+            return 1;
+        }
+        base = strrchr(local, '/');
+        base = base ? base + 1 : local;
+        snprintf(dest, sizeof(dest), "/data/local/tmp/%s", base);
+
+        ret = do_sync_push(local, dest, 0);
+        if (ret != 0)
+            return ret;
+
+        argv[argc - 1] = dest;              /* device path replaces local one */
+        ret = pax_systool_command(transport, serial, argc - 1, argv + 1);
+
+        /* best-effort cleanup of the pushed file */
+        snprintf(rmbuf, sizeof(rmbuf), "shell:rm ");
+        quoted = escape_arg(dest);
+        strncat(rmbuf, quoted, sizeof(rmbuf) - 1);
+        free(quoted);
+        fd = adb_connect(rmbuf);
+        if (fd >= 0) {
+            read_and_dump(fd);
+            adb_close(fd);
+        }
+        return ret;
+    }
+
+    return pax_systool_command(transport, serial, argc - 1, argv + 1);
 }
 
 static int mkdirs(const char *path)
@@ -1599,6 +1705,41 @@ top:
         return do_sync_ls(argv[1]);
     }
 
+    if(!strcmp(argv[0], "syslog")) {
+        /* PAX: stream the terminal's system log (paxlog:system service). */
+        if (argc != 1) return usage();
+        return send_shellcommand(ttype, serial, "paxlog:system");
+    }
+
+    if(!strcmp(argv[0], "systool")) {
+        /* PAX: run a remote systool subcommand (see 'adb help'). */
+        if (argc < 2) return usage();
+        return pax_systool_manage(ttype, serial, argc, argv);
+    }
+
+    if(!strcmp(argv[0], "getappinfo")) {
+        /* PAX: pull /data/resource/public/appinfo.bin from the device. */
+        const char* lpath = (argc >= 2) ? argv[1] : ".";
+        if (argc > 2) return usage();
+        return do_sync_pull("/data/resource/public/appinfo.bin", lpath, 0, 0);
+    }
+
+    if(!strcmp(argv[0], "unlink")) {
+        /* PAX: remove a file on the device. On newer firmware, deletions under
+         * /data/resource/app/ are routed through systool (persist-app);
+         * otherwise the ULNK sync request is used directly. */
+        const char* path;
+        if (argc != 2) return usage();
+        path = argv[1];
+        if (pax_systool_sysver() >= 100 && strstr(path, "/data/resource/app/")) {
+            char* sv[4];
+            sv[0] = "systool"; sv[1] = "remove"; sv[2] = "persist-app";
+            sv[3] = (char*)path;
+            return pax_systool_manage(ttype, serial, 4, sv);
+        }
+        return do_sync_unlink(path);
+    }
+
     if(!strcmp(argv[0], "push")) {
         int show_progress = 0;
         int copy_attrs = 0; // unused
@@ -1607,6 +1748,14 @@ top:
         parse_push_pull_args(&argv[1], argc - 1, &lpath, &rpath, &show_progress, &copy_attrs);
 
         if ((lpath != NULL) && (rpath != NULL)) {
+            /* PAX: on newer firmware, pushing into /data/resource/app/ installs
+             * a persistent app through systool instead of a raw file push. */
+            if (pax_systool_sysver() >= 100 && strstr(rpath, "/data/resource/app/")) {
+                char* sv[4];
+                sv[0] = "systool"; sv[1] = "install"; sv[2] = "persist-app";
+                sv[3] = (char*)lpath;
+                return pax_systool_manage(ttype, serial, 4, sv);
+            }
             return do_sync_push(lpath, rpath, show_progress);
         }
 

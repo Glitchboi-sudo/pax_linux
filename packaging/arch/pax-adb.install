@@ -1,0 +1,16 @@
+post_install() {
+  udevadm control --reload-rules 2>/dev/null || true
+  udevadm trigger 2>/dev/null || true
+  echo ":: pax_adb installed to /usr/bin/pax_adb"
+  echo ":: Unplug/replug your PAX terminal so the new udev rules take effect."
+  echo ":: If USB access is denied, add your user to the 'plugdev' group"
+  echo "   (or rely on systemd-logind 'uaccess' when logged in on the local seat)."
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  udevadm control --reload-rules 2>/dev/null || true
+}

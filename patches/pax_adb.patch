@@ -1,0 +1,137 @@
+# PAX adb patch — changes applied on top of AOSP system/core adb (android-5.1.1_r38)
+# Two functional PAX changes (adb.h, adb.c, usb_vendors.c) + two portability fixes
+# (usb_linux.c, adb_auth_host.c) needed to build against modern glibc/OpenSSL 3.x.
+
+--- a/adb/adb.h	2026-09-11 21:06:53.081936755 -0600
++++ b/adb/adb.h	2026-09-11 21:13:57.028743653 -0600
+@@ -31,6 +31,12 @@
+ #define A_CLSE 0x45534c43
+ #define A_WRTE 0x45545257
+ #define A_AUTH 0x48545541
++#define A_HDSK 0x4b534448           // PAX proprietary handshake ('HDSK')
++
++/* PAX handshake sub-commands, carried in amessage.arg0 */
++#define PAX_HANDSHAKE_REQ 1         // device -> host: requests the handshake
++#define PAX_HANDSHAKE_RES 2         // host -> device: handshake response
++#define PAX_HANDSHAKE_MAGIC "paxadb"
+ 
+ #define A_VERSION 0x01000000        // ADB protocol version
+ 
+--- a/adb/adb.c	2026-09-11 21:06:53.081936755 -0600
++++ b/adb/adb.c	2026-09-11 21:14:06.228996734 -0600
+@@ -657,6 +657,32 @@
+         }
+         break;
+ 
++    case A_HDSK: /* PAX proprietary handshake (recovered from pax_adb.exe) */
++        D("PID(%d) A_HDSK\n", getpid());
++        if (p->msg.arg0 == PAX_HANDSHAKE_REQ) {
++            /* The PAX terminal's adbd asks the host to identify itself before
++             * it will bring the connection online.  The expected answer is a
++             * fixed magic string ("paxadb") sent back as A_HDSK/arg0=2.
++             * There is no cryptography involved. */
++            D("PID(%d) A_HDSK PAX_HANDSHAKE_REQ\n", getpid());
++            if (HOST) {
++                apacket *np = get_apacket();
++                size_t len = strlen(PAX_HANDSHAKE_MAGIC);
++                memcpy(np->data, PAX_HANDSHAKE_MAGIC, len);
++                np->msg.command = A_HDSK;
++                np->msg.arg0 = PAX_HANDSHAKE_RES;
++                np->msg.arg1 = 0;
++                np->msg.data_length = len;
++                D("Calling send_handshake_response\n");
++                send_packet(np, t);
++            }
++        } else if (p->msg.arg0 == PAX_HANDSHAKE_RES) {
++            D("PID(%d) A_HDSK PAX_HANDSHAKE_RES\n", getpid());
++        } else {
++            D("PID(%d) A_HDSK UNKNOWN\n", getpid());
++        }
++        break;
++
+     default:
+         printf("handle_packet: what is %08x?!\n", p->msg.command);
+     }
+--- a/adb/usb_vendors.c	2026-09-11 21:06:53.083848697 -0600
++++ b/adb/usb_vendors.c	2026-09-11 21:22:45.656699688 -0600
+@@ -43,6 +43,11 @@
+ #define VENDOR_ID_ACER          0x0502
+ // Allwinner's USB Vendor ID
+ #define VENDOR_ID_ALLWINNER     0x1F3A
++// PAX Technology's USB Vendor IDs (PAX patch: required to detect PAX
++// PayDroid POS terminals such as the A910/A920/A930/D-series).  These are
++// NOT in upstream AOSP; pax_adb.exe added them to its vendor table.
++#define VENDOR_ID_PAX           0x2FB8
++#define VENDOR_ID_PAX_LEGACY    0x0327
+ // Amlogic's USB Vendor ID
+ #define VENDOR_ID_AMLOGIC       0x1b8e
+ // AnyDATA's USB Vendor ID
+@@ -202,6 +207,8 @@
+ int builtInVendorIds[] = {
+     VENDOR_ID_ACER,
+     VENDOR_ID_ALLWINNER,
++    VENDOR_ID_PAX,
++    VENDOR_ID_PAX_LEGACY,
+     VENDOR_ID_AMLOGIC,
+     VENDOR_ID_ANYDATA,
+     VENDOR_ID_ARCHOS,
+--- a/adb/usb_linux.c	2026-09-11 21:06:53.083848697 -0600
++++ b/adb/usb_linux.c	2026-09-11 21:11:30.331385202 -0600
+@@ -21,6 +21,7 @@
+ 
+ #include <sys/ioctl.h>
+ #include <sys/types.h>
++#include <sys/sysmacros.h>   /* major()/minor() on modern glibc */
+ #include <sys/time.h>
+ #include <dirent.h>
+ #include <fcntl.h>
+--- a/adb/adb_auth_host.c	2026-09-11 21:06:53.081936755 -0600
++++ b/adb/adb_auth_host.c	2026-09-11 21:11:13.867601478 -0600
+@@ -53,6 +53,18 @@
+ #define ANDROID_PATH   ".android"
+ #define ADB_KEY_FILE   "adbkey"
+ 
++/* OpenSSL 1.1 made the RSA struct opaque.  Provide the accessor on older
++ * OpenSSL so this file builds against both 1.0.x and 1.1+/3.x. */
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
++static void RSA_get0_key(const RSA *r, const BIGNUM **n,
++                         const BIGNUM **e, const BIGNUM **d)
++{
++    if (n) *n = r->n;
++    if (e) *e = r->e;
++    if (d) *d = r->d;
++}
++#endif
++
+ 
+ struct adb_private_key {
+     struct listnode node;
+@@ -67,6 +79,7 @@
+ {
+     int ret = 1;
+     unsigned int i;
++    const BIGNUM *rsa_n, *rsa_e;
+ 
+     BN_CTX* ctx = BN_CTX_new();
+     BIGNUM* r32 = BN_new();
+@@ -81,8 +94,10 @@
+         goto out;
+     }
+ 
++    RSA_get0_key(rsa, &rsa_n, &rsa_e, NULL);
++
+     BN_set_bit(r32, 32);
+-    BN_copy(n, rsa->n);
++    BN_copy(n, rsa_n);
+     BN_set_bit(r, RSANUMWORDS * 32);
+     BN_mod_sqr(rr, r, n, ctx);
+     BN_div(NULL, rem, n, r32, ctx);
+@@ -96,7 +111,7 @@
+         BN_div(n, rem, n, r32, ctx);
+         pkey->n[i] = BN_get_word(rem);
+     }
+-    pkey->exponent = BN_get_word(rsa->e);
++    pkey->exponent = BN_get_word(rsa_e);
+ 
+ out:
+     BN_free(n0inv);

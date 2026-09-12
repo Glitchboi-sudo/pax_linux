@@ -1,0 +1,19 @@
+# udev rules for PAX PayDroid POS terminals (adb + bootloader access)
+#
+# Grants the logged-in desktop user (via systemd-logind uaccess) and members of
+# the "plugdev" group read/write access to PAX devices in adb and bootloader
+# (Allwinner) mode, so pax_adb / fastboot can talk to them without root.
+#
+# VIDs:
+#   2fb8  PAX Technology (A910/A920/A930/D-series, current)
+#   0327  PAX (legacy models)
+#   1f3a  Allwinner (PAX bootloader / FEL mode used by paydroidboot/fastboot)
+#   0bb4  HTC id reused by some PAX firmware
+#
+# Install to /etc/udev/rules.d/ (or /usr/lib/udev/rules.d/), then:
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="2fb8", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0327", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1f3a", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0bb4", MODE="0660", GROUP="plugdev", TAG+="uaccess"

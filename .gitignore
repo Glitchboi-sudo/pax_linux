@@ -1,0 +1,16 @@
+# build artifacts
+/pax_adb
+obj/
+*.o
+
+# packaging output
+*.pkg.tar.*
+*.tar.gz
+packaging/arch/pkg/
+packaging/arch/src/
+packaging/arch/*.log
+
+# editors / os
+*.swp
+*~
+.DS_Store

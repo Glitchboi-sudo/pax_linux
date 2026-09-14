@@ -1,70 +1,73 @@
-# pax_adb para Linux
+> **Language:** **English** · [Español](README.es.md) · [Português](README.pt.md)
 
-Versión nativa de Linux de **`pax_adb`**, la herramienta usada para hablar por
-ADB con terminales POS **PAX PayDroid** (A910/A920/A930, serie D, etc.). Es el
-`adb` de AOSP (**1.0.32**, `system/core/adb`) recompilado nativo para Linux con
-el único añadido propietario que los terminales PAX requieren: el **handshake
-`A_HDSK`**. Equivale al `pax_adb.exe` de Windows.
+# pax_adb for Linux
 
-## Qué tiene de especial "la parte de PAX"
+A native Linux build of **`pax_adb`**, the tool used to talk over ADB to **PAX
+PayDroid** POS terminals (A910/A920/A930, D series, etc.). It is AOSP's `adb`
+(**1.0.32**, `system/core/adb`) recompiled natively for Linux, with the only
+proprietary addition that PAX terminals require: the **`A_HDSK` handshake**. It
+is the equivalent of the Windows `pax_adb.exe`.
 
-`pax_adb.exe` **no** es un `adb` estándar renombrado: es un fork de AOSP `adb`
-con dos cambios sobre el original, ambos reimplementados aquí:
+## What makes "the PAX part" special
 
-1. **Handshake `A_HDSK`** (comando `0x4b534448`, `"HDSK"`). Tras el `CNXN`, el
-   `adbd` del terminal PAX envía `A_HDSK` con `arg0=1` (*PAX_HANDSHAKE_REQ*) y
-   **no pone la conexión online hasta que el host responde** `A_HDSK` con
-   `arg0=2` (*PAX_HANDSHAKE_RES*) y el payload fijo **`paxadb`** (6 bytes). No hay
-   criptografía, ni claves, ni challenge-response: es un *magic string* constante.
-   El `adb` estándar no conoce `A_HDSK`, por eso no conecta con terminales PAX.
+`pax_adb.exe` is **not** a renamed stock `adb`: it is a fork of AOSP `adb` with
+three changes over the original, all reimplemented here:
 
-2. **USB Vendor IDs de PAX** añadidos a la tabla de `adb` (no están en AOSP):
-   `0x2FB8` (PAX Technology, actual) y `0x0327` (PAX legacy). `adb` solo reconoce
-   la interfaz ADB (clase `0xFF` / subclase `0x42` / protocolo `0x01`) si el VID
-   está en su lista. El VID `0x1F3A` (Allwinner, modo bootloader) ya venía en AOSP.
+1. **`A_HDSK` handshake** (command `0x4b534448`, `"HDSK"`). After `CNXN`, the PAX
+   terminal's `adbd` sends `A_HDSK` with `arg0=1` (*PAX_HANDSHAKE_REQ*) and **does
+   not bring the connection online until the host replies** with `A_HDSK`,
+   `arg0=2` (*PAX_HANDSHAKE_RES*) and the fixed payload **`paxadb`** (6 bytes).
+   There is no cryptography, no keys, no challenge-response: it is a constant
+   *magic string*. Stock `adb` does not know `A_HDSK`, which is why it never
+   connects to PAX terminals.
 
-3. **Comandos extra** que no existen en el `adb` estándar (reimplementados aquí):
-   - **`syslog`** → abre el servicio `paxlog:system` y vuelca el log de sistema del TPV.
-   - **`systool <subcomando>`** → ejecuta `shell:systool …` en el terminal. Para los
-     subcomandos con archivo (`update`/`write`/`install`/`apn`/`puk`) hace `push` del
-     archivo local a `/data/local/tmp` antes y lo borra después. Además captura el
-     **código de retorno** del terminal desde el marcador `[SYSTOOL:-N]` de la salida
-     y lo devuelve como exit code (comportamiento del `pax_adb.exe` de 2021).
-   - **`puk <install|uninstall|list>`** → gestiona paquetes PUK vía `shell:puktools`
-     (`install` sube el archivo local igual que `systool`).
-   - **`sysver`** → muestra las versiones del firmware (`pax.ctrl.androidver`,
-     `apbootver`, `spver`; o `systool sysver` según el firmware).
-   - **`unlink <remote>`** → borra un archivo en el terminal mediante la petición sync
-     **`ULNK`**. *Version-aware*: si `pax.ctrl.systool.sysver ≥ 100` y la ruta está bajo
-     `/data/resource/app/`, se redirige a `systool remove persist-app`.
-   - **`getappinfo [<local>]`** → hace `pull` de `/data/resource/public/appinfo.bin`.
-   - Además, `push` a rutas bajo `/data/resource/app/` en firmware `sysver ≥ 100` se
-     redirige a `systool install persist-app` (igual que el `.exe`).
+2. **PAX USB Vendor IDs** added to `adb`'s table (they are not in AOSP): `0x2FB8`
+   (PAX Technology, current) and `0x0327` (PAX legacy). `adb` only recognizes the
+   ADB interface (class `0xFF` / subclass `0x42` / protocol `0x01`) if the VID is
+   in its list. VID `0x1F3A` (Allwinner, bootloader mode) already shipped in AOSP.
 
-El diff exacto sobre AOSP `android-5.1.1_r38` está en
+3. **Extra commands** that do not exist in stock `adb` (reimplemented here):
+   - **`syslog`** → opens the `paxlog:system` service and dumps the terminal's system log.
+   - **`systool <subcommand>`** → runs `shell:systool …` on the terminal. For the
+     file-based subcommands (`update`/`write`/`install`/`apn`/`puk`) it `push`es the
+     local file to `/data/local/tmp` first and deletes it afterwards. It also captures
+     the terminal's **return code** from the `[SYSTOOL:-N]` marker in the output and
+     returns it as the process exit code (behavior of the 2021 `pax_adb.exe`).
+   - **`puk <install|uninstall|list>`** → manages PUK packages via `shell:puktools`
+     (`install` uploads the local file, just like `systool`).
+   - **`sysver`** → shows the firmware versions (`pax.ctrl.androidver`, `apbootver`,
+     `spver`; or `systool sysver` depending on the firmware).
+   - **`unlink <remote>`** → deletes a file on the terminal via the **`ULNK`** sync
+     request. *Version-aware*: if `pax.ctrl.systool.sysver ≥ 100` and the path is under
+     `/data/resource/app/`, it is redirected to `systool remove persist-app`.
+   - **`getappinfo [<local>]`** → `pull`s `/data/resource/public/appinfo.bin`.
+   - In addition, a `push` to paths under `/data/resource/app/` on firmware `sysver ≥ 100`
+     is redirected to `systool install persist-app` (same as the `.exe`).
+
+The exact diff against AOSP `android-5.1.1_r38` is in
 [`patches/pax_adb.patch`](patches/pax_adb.patch).
 
-> La parte de flasheo (`paydroidboot.exe`) es solo un fork de `fastboot` de AOSP
-> con branding PAX. El `fastboot` estándar de Linux (`android-tools`) cubre
-> `flash`/`erase`/`reboot bootloader`. No forma parte de este repositorio.
+> The flashing part (`paydroidboot.exe`) is just a fork of AOSP `fastboot` with
+> PAX branding. Linux's stock `fastboot` (`android-tools`) covers
+> `flash`/`erase`/`reboot bootloader`. It is not part of this repository.
 
-## Estructura
+## Layout
 
 ```
-src/                 Fuentes del host adb (AOSP) con el parche PAX ya aplicado
-include/             Cabeceras de AOSP necesarias para compilar sin el árbol completo
-Makefile             Build autocontenido (no requiere el sistema de build de Android)
-patches/             pax_adb.patch — el diff PAX sobre AOSP
+src/                 adb host sources (AOSP) with the PAX patch already applied
+include/             AOSP headers needed to build without the full tree
+Makefile             Self-contained build (does not require the Android build system)
+patches/             pax_adb.patch — the PAX diff over AOSP
 packaging/
-  arch/              PKGBUILD + scriptlet para paquete Arch (.pkg.tar.zst)
-  udev/              Reglas udev (permisos USB sin root)
-  portable/          install.sh (compila e instala en cualquier distro)
-test/                Terminal PAX falso + runner para validar el handshake sin hardware
+  arch/              PKGBUILD + scriptlet for the Arch package (.pkg.tar.zst)
+  udev/              udev rules (USB access without root)
+  portable/          install.sh (builds and installs on any distro)
+test/                Fake PAX terminal + runner to validate the handshake without hardware
 ```
 
-## Compilar
+## Build
 
-Dependencias: compilador C, y las cabeceras de **OpenSSL** y **zlib**.
+Dependencies: a C compiler, plus the **OpenSSL** and **zlib** headers.
 
 ```sh
 # Arch
@@ -72,33 +75,33 @@ sudo pacman -S --needed base-devel openssl zlib
 # Debian/Ubuntu
 sudo apt install build-essential libssl-dev zlib1g-dev
 
-make                 # produce ./pax_adb
-sudo make install    # instala en /usr/bin y las reglas udev
+make                 # produces ./pax_adb
+sudo make install    # installs into /usr/bin and the udev rules
 ```
 
-## Instalar
+## Install
 
-### Paquete Arch
+### Arch package
 ```sh
 cd packaging/arch
 makepkg -f
 sudo pacman -U pax-adb-*.pkg.tar.zst
 ```
 
-### Cualquier distro (script)
+### Any distro (script)
 ```sh
-sudo ./packaging/portable/install.sh          # compila e instala en /usr/local/bin + udev
-# o instalación de usuario (sin root, sin udev):
+sudo ./packaging/portable/install.sh          # builds and installs into /usr/local/bin + udev
+# or a user install (no root, no udev):
 ./packaging/portable/install.sh --user
 ```
 
-Tras instalar, desconecta y reconecta el terminal para que apliquen las reglas
-udev. Si el acceso USB es denegado, añade tu usuario al grupo `plugdev` (o confía
-en `uaccess` de systemd-logind al iniciar sesión localmente).
+After installing, unplug and replug the terminal so the udev rules take effect. If
+USB access is denied, add your user to the `plugdev` group (or rely on
+systemd-logind's `uaccess` when logged in locally).
 
-## Uso
+## Usage
 
-Los comandos son idénticos a los del `adb` original:
+The commands are identical to those of the original `adb`:
 
 | Windows (`.bat`)                            | Linux                                   |
 |---------------------------------------------|-----------------------------------------|
@@ -107,55 +110,55 @@ Los comandos son idénticos a los del `adb` original:
 | `pax_adb.exe shell pm uninstall --user 0 X` | `pax_adb shell pm uninstall --user 0 X` |
 | `pax_adb.exe devices`                       | `pax_adb devices`                       |
 
-Comandos específicos de PAX:
+PAX-specific commands:
 
-| Comando | Descripción |
+| Command | Description |
 |---|---|
-| `pax_adb syslog` | Vuelca el log de sistema del TPV (`paxlog:system`) |
-| `pax_adb systool <subcomando>` | Ejecuta un comando `systool` remoto (p. ej. `pax_adb systool puk write <archivo>`) |
-| `pax_adb puk <install\|uninstall\|list>` | Gestiona paquetes PUK (`puktools`) |
-| `pax_adb sysver` | Muestra las versiones del firmware del terminal |
-| `pax_adb unlink <remote>` | Borra un archivo en el terminal |
-| `pax_adb getappinfo [<local>]` | Descarga el `appinfo.bin` del terminal |
+| `pax_adb syslog` | Dumps the terminal's system log (`paxlog:system`) |
+| `pax_adb systool <subcommand>` | Runs a remote `systool` command (e.g. `pax_adb systool puk write <file>`) |
+| `pax_adb puk <install\|uninstall\|list>` | Manages PUK packages (`puktools`) |
+| `pax_adb sysver` | Shows the terminal's firmware versions |
+| `pax_adb unlink <remote>` | Deletes a file on the terminal |
+| `pax_adb getappinfo [<local>]` | Downloads the terminal's `appinfo.bin` |
 
-## Probar con un terminal PAX real
+## Testing with a real PAX terminal
 
-1. En el terminal, activa **Depuración USB** (Ajustes → Opciones de
-   desarrollador) y conéctalo por USB.
-2. Comprueba que el sistema lo ve:
+1. On the terminal, enable **USB debugging** (Settings → Developer options) and
+   connect it over USB.
+2. Check that the system sees it:
    ```sh
    lsusb | grep -iE "2fb8|0327|1f3a"
    ```
-3. Lista dispositivos:
+3. List devices:
    ```sh
-   pax_adb kill-server && pax_adb devices     # debe salir con estado "device"
+   pax_adb kill-server && pax_adb devices     # it should appear with the "device" state
    ```
-   Para ver el handshake en vivo:
+   To watch the handshake live:
    ```sh
-   ADB_TRACE=all pax_adb nodaemon server      # busca "A_HDSK PAX_HANDSHAKE_REQ" y "paxadb"
+   ADB_TRACE=all pax_adb nodaemon server      # look for "A_HDSK PAX_HANDSHAKE_REQ" and "paxadb"
    ```
-4. Prueba un comando real:
+4. Try a real command:
    ```sh
    pax_adb shell getprop pax.ctrl.androidver
    ```
-Si `devices` muestra `unauthorized`, acepta el diálogo RSA en la pantalla del POS.
+If `devices` shows `unauthorized`, accept the RSA dialog on the POS screen.
 
-## Validación sin hardware
+## Validation without hardware
 
-El handshake se valida de punta a punta con un "terminal PAX falso" que habla el
-protocolo ADB por TCP:
+The handshake is validated end to end with a "fake PAX terminal" that speaks the
+ADB protocol over TCP:
 
 ```sh
 make
 bash test/run_handshake_test.sh
 ```
 
-Envía `A_HDSK(arg0=1)` y confirma que `pax_adb` responde `A_HDSK(arg0=2,"paxadb")`,
-tras lo cual la conexión pasa a *online*. `handle_packet` es idéntico para USB y
-TCP, así que esto ejercita exactamente el código del parche. El resultado válido
-es la línea `RESULT: PASS` (el código de salida del shell puede ser ≠0 al cerrar
-el daemon adb; es inofensivo).
+It sends `A_HDSK(arg0=1)` and confirms that `pax_adb` replies
+`A_HDSK(arg0=2,"paxadb")`, after which the connection goes *online*. `handle_packet`
+is identical for USB and TCP, so this exercises exactly the patched code. A valid
+result is the `RESULT: PASS` line (the shell's exit code may be ≠0 when the adb
+daemon is shut down; that is harmless).
 
-## Licencia
+## License
 
-Apache 2.0 (código base de AOSP). Ver [`LICENSE`](LICENSE) y [`NOTICE`](NOTICE).
+Apache 2.0 (AOSP code base). See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

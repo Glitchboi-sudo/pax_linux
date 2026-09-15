@@ -60,6 +60,9 @@ Makefile             Self-contained build (does not require the Android build sy
 patches/             pax_adb.patch — the PAX diff over AOSP
 packaging/
   arch/              PKGBUILD + scriptlet for the Arch package (.pkg.tar.zst)
+  nfpm.yaml          single source for the .deb and .rpm packages
+  scripts/           post-install/remove hooks shared by .deb and .rpm
+  build-packages.sh  builds .deb + .rpm + portable tarball into ./dist
   udev/              udev rules (USB access without root)
   portable/          install.sh (builds and installs on any distro)
 test/                Fake PAX terminal + runner to validate the handshake without hardware
@@ -81,19 +84,47 @@ sudo make install    # installs into /usr/bin and the udev rules
 
 ## Install
 
-### Arch package
+### Prebuilt packages (from a [release](https://github.com/Glitchboi-sudo/pax_linux/releases))
+
+Every release ships native packages for the popular distro families. Download the
+one for yours and install it:
+
+```sh
+# Debian / Ubuntu / Mint / Pop!_OS
+sudo apt install ./pax-adb_*_amd64.deb
+
+# Fedora / RHEL / Rocky / Alma / openSUSE
+sudo dnf install ./pax-adb-*.x86_64.rpm      # or: sudo zypper install ./pax-adb-*.x86_64.rpm
+
+# Arch / Manjaro / EndeavourOS
+sudo pacman -U pax-adb-*-x86_64.pkg.tar.zst
+
+# Any other distro (portable tarball, no build)
+tar xzf pax-adb-*-linux-x86_64.tar.gz && cd pax-adb-*-linux-x86_64
+sudo ./install.sh
+```
+
+The `.deb`/`.rpm` are built on Ubuntu 22.04 (glibc 2.35 + OpenSSL 3), so they run on
+Debian 12+, Ubuntu 22.04+, Fedora, RHEL/Rocky/Alma 9, openSUSE and derivatives. On
+older releases (OpenSSL 1.1) build from source instead.
+
+### Build the Arch package yourself
 ```sh
 cd packaging/arch
 makepkg -f
 sudo pacman -U pax-adb-*.pkg.tar.zst
 ```
 
-### Any distro (script)
+### Build from source (any distro)
 ```sh
 sudo ./packaging/portable/install.sh          # builds and installs into /usr/local/bin + udev
 # or a user install (no root, no udev):
 ./packaging/portable/install.sh --user
 ```
+
+> Maintainers: `packaging/build-packages.sh` builds the `.deb`, `.rpm` and portable
+> tarball in one shot; the `release` GitHub Actions workflow does it automatically for
+> every `v*` tag and uploads them to the release.
 
 After installing, unplug and replug the terminal so the udev rules take effect. If
 USB access is denied, add your user to the `plugdev` group (or rely on

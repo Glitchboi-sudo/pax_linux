@@ -1,0 +1,62 @@
+# nfpm config — builds .deb and .rpm from a single source of truth.
+#   nfpm pkg -f packaging/nfpm.yaml -p deb -t dist/
+#   nfpm pkg -f packaging/nfpm.yaml -p rpm -t dist/
+#
+# The pax_adb binary must already be built (run `make` first) and should be
+# compiled on a base with a sufficiently old glibc/openssl (Ubuntu 22.04:
+# glibc 2.35 + OpenSSL 3 -> libcrypto.so.3) so the resulting packages run on
+# Debian 12+, Ubuntu 22.04+, Fedora, RHEL/Rocky/Alma 9, openSUSE, Mint, Pop.
+#
+# ${VERSION} is provided on the command line via `nfpm pkg ... -e` / env.
+name: pax-adb
+arch: amd64
+platform: linux
+version: ${VERSION}
+release: ${RELEASE}
+section: utils
+priority: optional
+maintainer: Glitchboi-sudo <erik.senseya@gmail.com>
+description: |
+  Native Linux build of AOSP adb with PAX patches.
+  Carries the PAX A_HDSK handshake and the syslog/systool/puk/sysver/unlink/
+  getappinfo commands for PAX PayDroid POS terminals.
+vendor: Glitchboi-sudo
+homepage: https://github.com/Glitchboi-sudo/pax_linux
+license: Apache-2.0
+
+# NOTE: src paths are resolved by nfpm relative to the current working
+# directory. build-packages.sh runs nfpm from the repository root, so these
+# are repo-root-relative.
+contents:
+  - src: pax_adb
+    dst: /usr/bin/pax_adb
+    file_info:
+      mode: 0755
+  - src: packaging/udev/51-android-pax.rules
+    dst: /usr/lib/udev/rules.d/51-android-pax.rules
+    file_info:
+      mode: 0644
+  - src: NOTICE
+    dst: /usr/share/doc/pax-adb/NOTICE
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/doc/pax-adb/LICENSE
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  postremove: packaging/scripts/postremove.sh
+
+overrides:
+  deb:
+    depends:
+      - libssl3
+      - zlib1g
+    recommends:
+      - android-tools-fastboot
+  rpm:
+    depends:
+      - openssl-libs
+      - zlib

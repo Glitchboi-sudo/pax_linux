@@ -1,0 +1,83 @@
+name: release
+
+# Build cross-distro packages and attach them to the GitHub Release.
+#
+# Triggers:
+#   - pushing a tag like v1.0.32-4  -> builds and uploads to that release
+#   - manual run (workflow_dispatch) with a tag input -> rebuild/re-upload
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build packages for, e.g. v1.0.32-4"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # .deb + .rpm + portable tarball + raw binary.
+  # ubuntu-22.04 gives glibc 2.35 + OpenSSL 3, so the binary and packages run
+  # on Debian 12+, Ubuntu 22.04+, Fedora, RHEL/Rocky/Alma 9, openSUSE, Mint, Pop.
+  linux-packages:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev zlib1g-dev curl ca-certificates file
+      - name: Build packages
+        run: packaging/build-packages.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: dist/*
+
+  # Arch .pkg.tar.zst via makepkg (must run as a non-root user).
+  arch-package:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install git + runtime deps
+        run: pacman -Syu --noconfirm git openssl zlib
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Build with makepkg
+        run: |
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c 'cd packaging/arch && makepkg -f --noconfirm --nocheck'
+          mkdir -p dist
+          # ship the main package only, not the -debug- one
+          find packaging/arch -maxdepth 1 -name 'pax-adb-[0-9]*.pkg.tar.zst' \
+            ! -name '*-debug-*' -exec cp {} dist/ \;
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: dist/*
+
+  release:
+    needs: [linux-packages, arch-package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          ls -l dist
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true

@@ -6,6 +6,9 @@ obj/
 # packaging output
 *.pkg.tar.*
 *.tar.gz
+*.deb
+*.rpm
+/dist/
 packaging/arch/pkg/
 packaging/arch/src/
 packaging/arch/*.log

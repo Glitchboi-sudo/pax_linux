@@ -1,5 +1,11 @@
 > **Idioma:** [English](README.md) · **Español** · [Português](README.pt.md)
 
+<p align="center">
+  <a href="https://buymeacoffee.com/glitchboi">
+    <img src="https://img.shields.io/badge/%E2%98%95%20Buy%20Me%20a%20Coffee-Apoya%20el%20proyecto-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" alt="Buy Me a Coffee" height="42" />
+  </a>
+</p>
+
 # pax_adb para Linux
 
 Versión nativa de Linux de **`pax_adb`**, la herramienta usada para hablar por

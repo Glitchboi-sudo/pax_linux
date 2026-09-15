@@ -1,5 +1,11 @@
 > **Language:** **English** · [Español](README.es.md) · [Português](README.pt.md)
 
+<p align="center">
+  <a href="https://buymeacoffee.com/glitchboi">
+    <img src="https://img.shields.io/badge/%E2%98%95%20Buy%20Me%20a%20Coffee-Support%20the%20project-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" alt="Buy Me a Coffee" height="42" />
+  </a>
+</p>
+
 # pax_adb for Linux
 
 A native Linux build of **`pax_adb`**, the tool used to talk over ADB to **PAX
